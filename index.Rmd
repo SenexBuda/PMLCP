@@ -1,0 +1,178 @@
+---
+title: "Predictive Modeling of Free Weight Exercise Form"
+author: "Senex Buda"
+date: "November 3, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary
+
+We describe the construction, evaluation and application of a predictive model for human activity recognition, specifically for the classification of exercise form for free weights exercise using measurements from sensors placed on the athlete's body while performing the exercise. 
+
+* We follow the multi-step process of question->data->features->algorithm->parameters->evaluation.
+* We demonstrate that it is possible to learn a very accurate random forest model from the labeled training data in reasonable time using R's caret package and its underlying packages on a low end PC. 
+
+## Question Formulation
+Construct, evaluate and apply a predictive model for human activity recognition, specifically to answer the question:
+
+* Is the unilateral biceps dumbell curl being performed correctly (A) or not and if not, which of four varieties (B-E) of poor form is being exhibited?
+
+The prediction should be based on observations consisting of a comprehensive set of measurements from sensors placed on the athlete's body while performing the exercise. The predictive model should be accurate but the model need not be simple or easily interpretable nor fast to train. 
+
+Given, the study context of this question, predictions will be limited to observations involving the 6 study participants and the conditions (sensor types, placement etc.) under which the study was performed. All the unlabeled test cases satisfy these conditions. Predictions outside these narrow parameters are out of scope.
+
+## Data - Exploration and Preparation
+
+We load the labeled training data from the file and examine its size:
+```{r}
+labeled<-read.csv("pml-training.csv", na.strings=c("NA",""))
+dim(labeled)
+```
+We check for missing data (NAs) in the data set.
+
+```{r}
+mean(complete.cases(labeled))
+mean(is.na(labeled))
+```
+
+Only a tiny proportion of the observations are complete and there is a very high overall percentage of missing data.
+We examine the proportions of missing data for the predictors:
+
+```{r}
+colNAproportion<-logical(ncol(labeled))
+for (c in 1:ncol(labeled)) colNAproportion[c]<- mean(is.na(labeled[,c]))
+barplot(colNAproportion,ylim=c(0,1), xlab='Predictor Index',
+        main='Proportion of Missing Data by Predictor')
+```
+
+It's clear from this plot that the predictors fall into 2 groups:
+
+* Ones for which there is no missing data
+* Ones for which almost all the data is missing
+
+## Feature Selection
+
+The predictive value of almost entirely missing data is likely to be low and rather than trying to impute almost all the data from the few available ones, we deselect these features from the training set to reduce the dimensionality and hopefully speed up the model training.
+
+```{r}
+naCols<-which(colNAproportion>0.975)
+labeled<-labeled[,-naCols]
+```
+
+We confirm that no NAs remain in the training data set:
+
+```{r}
+sum(is.na(labeled))
+```
+
+This process has removed 100 predictors, a significant dimensionality reduction:
+```{r}
+dim(labeled)
+```
+
+```{r}
+names(labeled)
+```
+Examining the names of the training data set, most look like the measurements of physical motions of the athlete by the various sensors but the first few look like other information like unique observation identifiers, athlete names, timestamps etc. Referring back to the question formulation, we are not doing forecasting based on a time series or trying to recognize specific athlete's forms but are trying to predict exercise form labels based on physical measurements so these first few features seem like they may not be relevant to answering our question. 
+
+```{r}
+head(labeled[,1:7])
+labeled<-labeled[,-c(1:7)]
+```
+Looking at the first few observations confirms our suspicions so we remove these predictors.
+
+## Choice of Model, Algorithm and Parameters
+
+We choose to build a random forest predictive model because random forests have a well-established strong reputation for high accuracy (which is our prime focus) and their drawbacks of low interpretability, training speed, scalability and simplicity are not priorities for this project (see question formulation above) and so overall random forests seems like a good tradeoff for this project. While random forests are slow to train, once built their predictions are both fast and scalable.
+
+We use the R caret package for partitioning the data into training and testing subsets, for training the model, for making predictions and for assessing out-of-sample model prediction accuracy.
+
+```{r message=FALSE}
+library(caret)
+library(randomForest)
+```
+We partition the labeled data into a training set which will be used to train the model and a testing set that will be used to *independently* assess the accuracy of the predictive model resulting from the training (within the prediction scope as clarified in the question formulation). The testing set needs to be sufficiently large to provide a narrow confidence interval for accurately estimating the out-of-sample error for the predictive model but we want to use most of the data to train the model since model accuracy typically improves with more data. Taking these considerations into account, we set p=0.8 so 80% of the data will be used for training while 20% is set aside for independently evaluating the model resulting from the training.
+
+We set the seed because the data partitioning uses random sampling and we want to ensure that the analysis is reproducible.
+
+```{r message=FALSE}
+set.seed(1234)
+inTrain<-createDataPartition(labeled$classe,p=0.8,list=FALSE)
+training<-labeled[inTrain,]
+testing<-labeled[-inTrain,]
+dim(training)
+dim(testing)
+```
+
+### Training and Cross Validation of the Model
+We set the parameters of the training algorithm to perform 5-fold cross validation on the training set to reduce potential bias / overfitting while keeping the training time within reasonable limits. 
+Since the folds are chosen by random sampling, we set the seed to ensure reproducibility.
+
+```{r cache=TRUE, message=FALSE}
+set.seed(5432)
+cv<-trainControl(method="cv", number=5)
+system.time(rfModel<-train(classe~.,data=training,method="rf",trControl=cv))
+rfModel
+```
+
+The figure shows how model accuracy varies with the number of features used for tree building.
+```{r}
+plot(rfModel)
+rfModel$finalModel
+```
+
+## Evaluating the Accuracy of the Predictive Model
+
+The estimated out-of-sample error rate (OOB estimate of  error rate) from the 5-fold cross validation is shown in the summary of the random forest final model above.
+
+We confirm this estimate of the out-of-sample accuracy of the predictive model by comparing its predicted labels for the testing data set that was held out and not used for training the model vs. the actual labels provided in the testing data set:
+
+```{r message=FALSE}
+cm<-confusionMatrix(predict(rfModel,testing),testing$classe)
+cm
+```
+We note that the estimated out-of-sample error rate from the cross validation falls in the 95% confidence interval derived from the exact binomial test.
+The exact binomial test enables us to infer with 95% confidence that the out-of-sample error rate is below 1%, specifically that it is no more than:
+```{r}
+errorRate<-1-cm$overall[["AccuracyLower"]]
+errorRate
+```
+Given this conservative pessimistic out-of-sample error rate for the predictive model, and assuming that the test cases are randomly sampled from the same population, the probability that we predict all 20 test cases correctly is:
+
+```{r}
+pbinom(0,20,errorRate)
+```
+
+The probability of predicting at least 80% of the test cases correctly is:
+
+```{r}
+pbinom(4,20,errorRate)
+```
+
+## Predicting the unlabeled test cases
+
+We load the unlabeled test cases and compute the predicted labels for them using our model.
+
+```{r}
+unlabeled<-read.csv("pml-testing.csv")
+predict(rfModel,newdata=unlabeled)
+```
+
+## Conclusions
+We have demonstrated that it is possible to learn a very accurate model from the labeled training data for this HAR problem in reasonable time using R's caret package and its underlying packages on a low end PC.
+
+## References
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+More details available at [HAR](http://groupware.les.inf.puc-rio.br/har#ixzz4OkklvCA7)
+
+## License
+The dataset used for training, validation and testing is licensed under the Creative Commons (CC BY-SA)
+
+Important: you are free to use this dataset for any purpose. This dataset is licensed under the Creative Commons license (CC BY-SA). The CC BY-SA license means you can remix, tweak, and build upon this work even for commercial purposes, as long as you credit the authors of the original work and you license your new creations under the identical terms we are licensing to you. This license is often compared to "copyleft" free and open source software licenses. All new works based on this dataset will carry the same license, so any derivatives will also allow commercial use.
+
+Read more at [HAR](http://groupware.les.inf.puc-rio.br/har#ixzz4OkrJyHGZ)
